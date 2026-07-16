@@ -1,9 +1,9 @@
 {
-    "name" : "im2-uni-offlinePush",
-    "appid" : "__UNI__B380AC4",
+    "name" : "uni-offline-push-vue3-playground",
+    "appid" : "__UNI__AE06305",
     "description" : "",
-    "versionName" : "1.0.0",
-    "versionCode" : "100",
+    "versionName" : "1.0.8",
+    "versionCode" : 108,
     "transformPx" : false,
     /* 5+App特有相关 */
     "app-plus" : {
@@ -45,7 +45,11 @@
             /* ios打包配置 */
             "ios" : {
                 "dSYMs" : false,
-                "idfa" : false
+                "idfa" : false,
+                "pushRegisterMode" : "manual",
+                // https://ask.dcloud.net.cn/article/36430
+                // voip 要的权限
+                "UIBackgroundModes" : [ "voip", "remote-notification" ]
             },
             /* SDK配置 */
             "sdkConfigs" : {
@@ -55,9 +59,9 @@
         },
         "nativePlugins" : {
             "NIMUniPlugin" : {
-                "PUSH_VIVO_APPID" : "23432",
-                "PUSH_VIVO_APPKEY" : "432423",
-                "PUSH_HONOR_APPID" : "3123123123",
+                "PUSH_VIVO_APPID" : "*********",
+                "PUSH_VIVO_APPKEY" : "*********",
+                "PUSH_HONOR_APPID" : "*********",
                 "__plugin_info__" : {
                     "name" : "NIMUniPlugin",
                     "description" : "uni消息推送插件",
@@ -111,5 +115,21 @@
     "uniStatistics" : {
         "enable" : false
     },
-    "vueVersion" : "2"
+    "vueVersion" : "3",
+    "app-harmony" : {
+        "distribute" : {
+            "bundleName" : "im.netease.nim.demo.new.test",
+            "signingConfigs" : {
+                "default" : {
+                    "certpath" : "*********",
+                    "keyAlias" : "*********",
+                    "keyPassword" : "*********",
+                    "profile" : "*********",
+                    "signAlg" : "SHA256withECDSA",
+                    "storeFile" : "*********",
+                    "storePassword" : "*********"
+                }
+            }
+        }
+    }
 }

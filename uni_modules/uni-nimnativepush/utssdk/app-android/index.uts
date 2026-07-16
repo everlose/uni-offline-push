@@ -1,0 +1,663 @@
+/**
+ * 引用 Android 系统库
+ */
+import { Build } from 'android.os.Build';
+import { Context } from 'android.content.Context';
+import { Application } from 'android.app.Application';
+import { SharedPreferences } from 'android.content.SharedPreferences';
+import { UTSAndroid } from 'io.dcloud.uts.UTSAndroid';
+import { Log } from 'android.util.Log';
+import { String as JString } from 'java.lang.String';
+import { ConnectionResult } from 'com.google.android.gms.common.ConnectionResult';
+import { GoogleApiAvailability } from 'com.google.android.gms.common.GoogleApiAvailability';
+
+// 华为推送相关导入
+import { HmsMessaging } from 'com.huawei.hms.push.HmsMessaging';
+import { HmsInstanceId } from 'com.huawei.hms.push.HmsInstanceId';
+
+// 小米推送相关导入
+import { MiPushClient } from 'com.xiaomi.mipush.sdk.MiPushClient';
+
+// OPPO推送相关导入
+import { HeytapPushManager } from 'com.heytap.msp.push.HeytapPushManager';
+
+// vivo推送相关导入
+import { PushClient } from 'com.vivo.push.sdk.PushClient';
+
+// FCM推送相关导入
+import { FirebaseApp } from 'com.google.firebase.FirebaseApp';
+import { FirebaseMessaging } from 'com.google.firebase.messaging.FirebaseMessaging';
+
+// 魅族推送相关导入
+import { PushManager } from 'com.meizu.cloud.pushsdk.PushManager';
+
+// 荣耀推送相关导入
+import { HonorMessaging } from 'com.honor.push.sdk.HonorMessaging';
+
+/* 引入 interface.uts 文件中定义的变量 */
+import { GetDeviceTokenOptions, GetDeviceTokenCallback, GetDeviceToken, OpenNotificationCallback, AddOpenNotificationListener, RemoveOpenNotificationListener } from '../interface.uts';
+
+/* 引入 unierror.uts 文件中定义的变量 */
+import { UniErrorSubject } from '../unierror';
+
+// 日志TAG
+const TAG = "NIMNativePush";
+
+// 推送类型常量
+const PUSH_TYPE = {
+  XIAOMI: '5',       // 小米推送
+  HMS: '6',          // 华为推送
+  MEIZU: '7',        // 魅族推送
+  FCM: '8',          // Firebase Cloud Messaging
+  VIVO: '9',         // vivo推送
+  OPPO: '10',        // OPPO推送
+  HONOR: '11',       // 荣耀推送
+  APNS: '0',         // Apple Push Notification Service (iOS)
+  UNKNOWN: 'unknown' // 未知类型
+};
+
+// Token 缓存key
+const TOKEN_CACHE_KEY = "nim_push_token";
+const TOKEN_TYPE_CACHE_KEY = "nim_push_type";
+const TOKEN_TIME_CACHE_KEY = "nim_push_time";
+
+// Token 缓存有效期（24小时，单位毫秒）
+const TOKEN_CACHE_VALIDITY = 24 * 60 * 60 * 1000;
+
+/**
+ * 获取设备推送令牌的实现
+ */
+const getDeviceTokenImpl: GetDeviceToken = function(options: GetDeviceTokenOptions, callback: GetDeviceTokenCallback) {
+  // 使用默认值处理入参
+  const suggestPushType = options.suggestPushType || '';
+  const config = options.config || {};
+  
+  // 检查缓存的Token是否有效
+  const cachedToken = checkCachedToken();
+  if (cachedToken) {
+    console.log('Using cached push token');
+    callback(cachedToken);
+    return;
+  }
+
+  // 确定使用的推送类型
+  const pushType = suggestPushType || detectPushType();
+  console.log(`Using push type: ${pushType}`);
+  
+  switch (pushType) {
+    case PUSH_TYPE.HMS:
+      getHmsToken(config, callback);
+      break;
+    case PUSH_TYPE.XIAOMI:
+      getXiaomiToken(config, callback);
+      break;
+    case PUSH_TYPE.OPPO:
+      getOppoToken(config, callback);
+      break;
+    case PUSH_TYPE.VIVO:
+      getVivoToken(config, callback);
+      break;
+    case PUSH_TYPE.MEIZU:
+      getMeizuToken(config, callback);
+      break;
+    case PUSH_TYPE.FCM:
+      getFcmToken(config, callback);
+      break;
+    case PUSH_TYPE.HONOR:
+      getHonorToken(config, callback);
+      break;
+    default:
+      console.error(`Unsupported push type: ${pushType}`);
+      callback('');
+  }
+};
+
+const addOpenNotificationListenerImpl: AddOpenNotificationListener = function(callback: OpenNotificationCallback) {
+  Log.w(TAG, "addOpenNotificationListener is handled by NIMUniPlugin native plugin on Android");
+};
+
+const removeOpenNotificationListenerImpl: RemoveOpenNotificationListener = function(callback: OpenNotificationCallback) {
+  Log.w(TAG, "removeOpenNotificationListener is handled by NIMUniPlugin native plugin on Android");
+};
+
+/**
+ * 根据设备厂商信息自动检测应该使用的推送类型
+ */
+function detectPushType(): string {
+  const manufacturer = Build.MANUFACTURER?.toLowerCase() || '';
+  const brand = Build.BRAND?.toLowerCase() || '';
+  const model = Build.MODEL?.toLowerCase() || '';
+  
+  // 判断设备厂商
+  if (manufacturer.includes('huawei') || brand.includes('huawei')) {
+    return PUSH_TYPE.HMS;
+  } else if (manufacturer.includes('xiaomi') || brand.includes('xiaomi') || brand.includes('redmi')) {
+    return PUSH_TYPE.XIAOMI;
+  } else if (manufacturer.includes('oppo') || brand.includes('oppo') || brand.includes('oneplus')) {
+    return PUSH_TYPE.OPPO;
+  } else if (manufacturer.includes('vivo') || brand.includes('vivo')) {
+    return PUSH_TYPE.VIVO;
+  } else if (manufacturer.includes('meizu') || brand.includes('meizu')) {
+    return PUSH_TYPE.MEIZU;
+  } else if (manufacturer.includes('honor') || brand.includes('honor')) {
+    return PUSH_TYPE.HONOR;
+  } else {
+    // 检查Google服务是否可用，决定是否使用FCM
+    const isInChina = isChineseDevice();
+    if (!isInChina && isGoogleServicesAvailable()) {
+      return PUSH_TYPE.FCM;
+    }
+    
+    // 如果无法确定或在中国且非主流厂商，默认尝试小米推送
+    return PUSH_TYPE.XIAOMI;
+  }
+}
+
+/**
+ * 判断是否为中国地区设备（简单实现）
+ */
+function isChineseDevice(): boolean {
+  try {
+    const context = UTSAndroid.getUniActivity();
+    if (context) {
+      // 检查系统语言和国家
+      const locale = context.getResources().getConfiguration().locale;
+      const country = locale.getCountry();
+      return country === "CN";
+    }
+  } catch (err) {
+    console.error(`Error checking device region: ${err}`);
+  }
+  
+  // 默认保守处理，如果无法确定，假设是中国设备
+  return true;
+}
+
+/**
+ * 检查Google服务是否可用
+ */
+function isGoogleServicesAvailable(): boolean {
+  try {
+    const context = UTSAndroid.getUniActivity();
+    if (!context) {
+      return false;
+    }
+    
+    const availability = GoogleApiAvailability.getInstance();
+    const resultCode = availability.isGooglePlayServicesAvailable(context);
+    return resultCode == ConnectionResult.SUCCESS;
+  } catch (err) {
+    Log.e(TAG, `Error checking Google Play Services availability: ${err}`);
+    return false;
+  }
+}
+
+/**
+ * 获取华为 HMS 推送 Token
+ */
+function getHmsToken(config: Record<string, string>, callback: GetDeviceTokenCallback): void {
+  try {
+    const context = UTSAndroid.getUniActivity();
+    if (!context) {
+      Log.e(TAG, "Failed to get context for HMS token");
+      callback('');
+      return;
+    }
+
+    Log.i(TAG, "Getting HMS push token...");
+    
+    // 获取默认HMS实例
+    const hmsInstanceId = HmsInstanceId.getInstance(context);
+    if (!hmsInstanceId) {
+      Log.e(TAG, "Failed to get HMS instance");
+      callback('');
+      return;
+    }
+
+    // 应用ID，从华为开发者联盟获取
+    const appId = config["hmsAppId"] || "";
+    if (appId.length === 0) {
+      Log.e(TAG, "HMS AppID not provided in config");
+      callback('');
+      return;
+    }
+    
+    // 调用异步API获取Token
+    try {
+      // 确保HMS Core已初始化
+      HmsMessaging.getInstance(context);
+      
+      // 获取token，参数scope通常为"HCM"
+      const token = hmsInstanceId.getToken(appId, "HCM");
+      
+      if (token && token.length > 0) {
+        Log.i(TAG, "HMS token obtained successfully");
+        // 保存到缓存
+        saveTokenToCache(token, PUSH_TYPE.HMS);
+        callback(token);
+      } else {
+        Log.e(TAG, "HMS token is empty");
+        callback('');
+      }
+    } catch (tokenError) {
+      Log.e(TAG, `HMS getToken API error: ${tokenError}`);
+      callback('');
+    }
+  } catch (err) {
+    Log.e(TAG, `Error getting HMS token: ${err}`);
+    callback('');
+  }
+}
+
+/**
+ * 获取小米推送 Token
+ */
+function getXiaomiToken(config: Record<string, string>, callback: GetDeviceTokenCallback): void {
+  try {
+    const context = UTSAndroid.getUniActivity();
+    if (!context) {
+      Log.e(TAG, "Failed to get context for Xiaomi token");
+      callback('');
+      return;
+    }
+
+    Log.i(TAG, "Getting Xiaomi push token...");
+    
+    // 应用ID和Key，从小米开放平台获取
+    const appId = config["xiaomiAppId"] || "";
+    const appKey = config["xiaomiAppKey"] || "";
+    
+    if (appId.length === 0 || appKey.length === 0) {
+      Log.e(TAG, "Xiaomi AppID or AppKey not provided in config");
+      callback('');
+      return;
+    }
+    
+    // 注册小米推送
+    try {
+      // 初始化小米推送SDK
+      MiPushClient.registerPush(context, appId, appKey);
+      
+      // 获取RegId(Token)
+      const token = MiPushClient.getRegId(context);
+      
+      if (token && token.length > 0) {
+        Log.i(TAG, "Xiaomi token obtained successfully");
+        // 保存到缓存
+        saveTokenToCache(token, PUSH_TYPE.XIAOMI);
+        callback(token);
+      } else {
+        Log.e(TAG, "Xiaomi token is empty or registration not complete");
+        // 小米推送SDK注册是异步的，这里可能需要等待广播接收器接收到注册完成事件
+        // 实际应用中应该在广播接收器中获取token
+        Log.e(TAG, "SDK registered but token not available yet. Need to implement broadcast receiver");
+        callback('');
+      }
+    } catch (tokenError) {
+      Log.e(TAG, `Xiaomi push registration error: ${tokenError}`);
+      callback('');
+    }
+  } catch (err) {
+    Log.e(TAG, `Error getting Xiaomi token: ${err}`);
+    callback('');
+  }
+}
+
+/**
+ * 获取 OPPO 推送 Token
+ */
+function getOppoToken(config: Record<string, string>, callback: GetDeviceTokenCallback): void {
+  try {
+    const context = UTSAndroid.getUniActivity();
+    if (!context) {
+      Log.e(TAG, "Failed to get context for OPPO token");
+      callback('');
+      return;
+    }
+
+    Log.i(TAG, "Getting OPPO push token...");
+    
+    // OPPO推送所需参数
+    const appKey = config["oppoAppKey"] || "";
+    const appSecret = config["oppoAppSecret"] || "";
+    
+    if (appKey.length === 0 || appSecret.length === 0) {
+      Log.e(TAG, "OPPO AppKey or AppSecret not provided in config");
+      callback('');
+      return;
+    }
+    
+    try {
+      // 检查OPPO推送是否已经初始化
+      if (!HeytapPushManager.isSupportPush(context)) {
+        Log.e(TAG, "This device doesn't support OPPO push");
+        callback('');
+        return;
+      }
+      
+      // 初始化OPPO推送SDK (如果需要)
+      if (!HeytapPushManager.init(context, true)) {
+        Log.e(TAG, "Failed to initialize OPPO push SDK");
+        callback('');
+        return;
+      }
+      
+      // 获取推送注册ID
+      const token = HeytapPushManager.getRegisterID();
+      
+      if (token && token.length > 0) {
+        Log.i(TAG, "OPPO token obtained successfully");
+        // 保存到缓存
+        saveTokenToCache(token, PUSH_TYPE.OPPO);
+        callback(token);
+      } else {
+        Log.e(TAG, "OPPO token is empty, registration might not be complete");
+        // OPPO推送SDK注册是异步的，可能需要监听注册回调
+        Log.e(TAG, "Need to implement PushCallback for OPPO push");
+        callback('');
+      }
+    } catch (tokenError) {
+      Log.e(TAG, `OPPO push error: ${tokenError}`);
+      callback('');
+    }
+  } catch (err) {
+    Log.e(TAG, `Error getting OPPO token: ${err}`);
+    callback('');
+  }
+}
+
+/**
+ * 获取 vivo 推送 Token
+ */
+function getVivoToken(config: Record<string, string>, callback: GetDeviceTokenCallback): void {
+  try {
+    const context = UTSAndroid.getUniActivity();
+    if (!context) {
+      Log.e(TAG, "Failed to get context for vivo token");
+      callback('');
+      return;
+    }
+
+    Log.i(TAG, "Getting vivo push token...");
+    
+    try {
+      // 检查vivo推送是否可用
+      if (!PushClient.getInstance(context).isSupport()) {
+        Log.e(TAG, "This device doesn't support vivo push");
+        callback('');
+        return;
+      }
+      
+      // 打开vivo推送服务，这通常在应用启动时就应该调用
+      PushClient.getInstance(context).turnOnPush(result => {
+        if (result == 0) {  // 0 表示成功
+          // 获取regId (token)
+          const token = PushClient.getInstance(context).getRegId();
+          
+          if (token && token.length > 0) {
+            Log.i(TAG, "vivo token obtained successfully");
+            // 保存到缓存
+            saveTokenToCache(token, PUSH_TYPE.VIVO);
+            callback(token);
+          } else {
+            Log.e(TAG, "vivo token is empty");
+            callback('');
+          }
+        } else {
+          Log.e(TAG, `Failed to turn on vivo push: ${result}`);
+          callback('');
+        }
+      });
+    } catch (tokenError) {
+      Log.e(TAG, `vivo push error: ${tokenError}`);
+      callback('');
+    }
+  } catch (err) {
+    Log.e(TAG, `Error getting vivo token: ${err}`);
+    callback('');
+  }
+}
+
+/**
+ * 获取魅族推送 Token
+ */
+function getMeizuToken(config: Record<string, string>, callback: GetDeviceTokenCallback): void {
+  try {
+    const context = UTSAndroid.getUniActivity();
+    if (!context) {
+      Log.e(TAG, "Failed to get context for Meizu token");
+      callback('');
+      return;
+    }
+
+    Log.i(TAG, "Getting Meizu push token...");
+    
+    // 魅族推送所需参数
+    const appId = config["meizuAppId"] || "";
+    const appKey = config["meizuAppKey"] || "";
+    
+    if (appId.length === 0 || appKey.length === 0) {
+      Log.e(TAG, "Meizu AppID or AppKey not provided in config");
+      callback('');
+      return;
+    }
+    
+    try {
+      // 注册魅族推送
+      PushManager.register(context, appId, appKey);
+      
+      // 获取PushID (token)
+      const token = PushManager.getPushId(context);
+      
+      if (token && token.length > 0) {
+        Log.i(TAG, "Meizu token obtained successfully");
+        // 保存到缓存
+        saveTokenToCache(token, PUSH_TYPE.MEIZU);
+        callback(token);
+      } else {
+        Log.e(TAG, "Meizu token is empty, registration might not be complete");
+        // 魅族推送SDK注册是异步的，可能需要等待注册回调
+        Log.e(TAG, "Meizu push registration may be incomplete");
+        callback('');
+      }
+    } catch (tokenError) {
+      Log.e(TAG, `Meizu push error: ${tokenError}`);
+      callback('');
+    }
+  } catch (err) {
+    Log.e(TAG, `Error getting Meizu token: ${err}`);
+    callback('');
+  }
+}
+
+/**
+ * 获取 FCM 推送 Token
+ */
+function getFcmToken(config: Record<string, string>, callback: GetDeviceTokenCallback): void {
+  try {
+    const context = UTSAndroid.getUniActivity();
+    if (!context) {
+      Log.e(TAG, "Failed to get context for FCM token");
+      callback('');
+      return;
+    }
+
+    Log.i(TAG, "Getting FCM push token...");
+    
+    try {
+      // 检查FirebaseApp是否初始化
+      if (FirebaseApp.getInstance() == null) {
+        // 如果未初始化，则尝试初始化
+        Log.i(TAG, "Initializing Firebase App");
+        FirebaseApp.initializeApp(context);
+      }
+      
+      // 获取FCM实例
+      const fcm = FirebaseMessaging.getInstance();
+      if (!fcm) {
+        Log.e(TAG, "Failed to get FCM instance");
+        callback('');
+        return;
+      }
+      
+      // 获取token (异步操作)
+      fcm.getToken().addOnCompleteListener(task => {
+        if (task.isSuccessful()) {
+          const token = task.getResult();
+          if (token && token.length > 0) {
+            Log.i(TAG, "FCM token obtained successfully");
+            // 保存到缓存
+            saveTokenToCache(token, PUSH_TYPE.FCM);
+            callback(token);
+          } else {
+            Log.e(TAG, "FCM token is empty");
+            callback('');
+          }
+        } else {
+          Log.e(TAG, `Failed to get FCM token: ${task.getException()}`);
+          callback('');
+        }
+      });
+    } catch (tokenError) {
+      Log.e(TAG, `FCM error: ${tokenError}`);
+      callback('');
+    }
+  } catch (err) {
+    Log.e(TAG, `Error getting FCM token: ${err}`);
+    callback('');
+  }
+}
+
+/**
+ * 获取荣耀推送 Token
+ */
+function getHonorToken(config: Record<string, string>, callback: GetDeviceTokenCallback): void {
+  try {
+    const context = UTSAndroid.getUniActivity();
+    if (!context) {
+      Log.e(TAG, "Failed to get context for Honor token");
+      callback('');
+      return;
+    }
+
+    Log.i(TAG, "Getting Honor push token...");
+    
+    // 荣耀推送所需参数
+    const appId = config["honorAppId"] || "";
+    
+    if (appId.length === 0) {
+      Log.e(TAG, "Honor AppID not provided in config");
+      callback('');
+      return;
+    }
+    
+    try {
+      // 获取荣耀推送实例
+      const honorMessaging = HonorMessaging.getInstance(context);
+      
+      // 获取荣耀推送Token
+      honorMessaging.getToken(appId, result => {
+        if (result && result.getReturnCode() == 0) { // 0表示成功
+          const token = result.getToken();
+          if (token && token.length > 0) {
+            Log.i(TAG, "Honor token obtained successfully");
+            // 保存到缓存
+            saveTokenToCache(token, PUSH_TYPE.HONOR);
+            callback(token);
+          } else {
+            Log.e(TAG, "Honor token is empty");
+            callback('');
+          }
+        } else {
+          Log.e(TAG, `Failed to get Honor token: ${result?.getReturnCode() ?? "unknown error"}`);
+          callback('');
+        }
+      });
+    } catch (tokenError) {
+      Log.e(TAG, `Honor push error: ${tokenError}`);
+      callback('');
+    }
+  } catch (err) {
+    Log.e(TAG, `Error getting Honor token: ${err}`);
+    callback('');
+  }
+}
+
+/**
+ * 检查缓存的Token是否有效
+ * 如果有有效的缓存Token，则返回缓存的Token，否则返回空字符串
+ */
+function checkCachedToken(): string {
+  try {
+    const context = UTSAndroid.getUniActivity();
+    if (!context) {
+      return '';
+    }
+    
+    const prefs: SharedPreferences = context.getSharedPreferences('nim_push_prefs', Context.MODE_PRIVATE);
+    const cachedToken = prefs.getString(TOKEN_CACHE_KEY, '');
+    const cachedType = prefs.getString(TOKEN_TYPE_CACHE_KEY, '');
+    const cachedTime = prefs.getLong(TOKEN_TIME_CACHE_KEY, 0);
+    
+    const now = Date.now();
+    
+    // 如果缓存的Token存在且未过期，则返回缓存的Token
+    if (cachedToken && cachedToken.length > 0 && 
+        cachedType && cachedType.length > 0 && 
+        cachedTime > 0 && 
+        (now - cachedTime) < TOKEN_CACHE_VALIDITY) {
+      return cachedToken;
+    }
+  } catch (err) {
+    console.error(`Error checking cached token: ${err}`);
+  }
+  
+  return '';
+}
+
+/**
+ * 保存Token到缓存
+ */
+function saveTokenToCache(token: string, pushType: string): void {
+  if (!token || token.length === 0 || !pushType || pushType.length === 0) {
+    return;
+  }
+  
+  try {
+    const context = UTSAndroid.getUniActivity();
+    if (!context) {
+      return;
+    }
+    
+    const prefs: SharedPreferences = context.getSharedPreferences('nim_push_prefs', Context.MODE_PRIVATE);
+    const editor = prefs.edit();
+    
+    editor.putString(TOKEN_CACHE_KEY, token);
+    editor.putString(TOKEN_TYPE_CACHE_KEY, pushType);
+    editor.putLong(TOKEN_TIME_CACHE_KEY, Date.now());
+    
+    editor.commit();
+  } catch (err) {
+    console.error(`Error saving token to cache: ${err}`);
+  }
+}
+
+/**
+ * 导出 getDeviceToken 函数，用于 uni-ext-api 的映射
+ */
+export const getDeviceToken = getDeviceTokenImpl;
+export const addOpenNotificationListener = addOpenNotificationListenerImpl;
+export const removeOpenNotificationListener = removeOpenNotificationListenerImpl;
+
+/**
+ * 导出 NIMNativePush 对象
+ */
+export const NIMNativePush = {
+  getDeviceToken: getDeviceTokenImpl,
+  addOpenNotificationListener: addOpenNotificationListenerImpl,
+  removeOpenNotificationListener: removeOpenNotificationListenerImpl
+};
+
+/**
+ * 更多插件开发的信息详见：https://uniapp.dcloud.net.cn/plugin/uts-plugin.html
+ */

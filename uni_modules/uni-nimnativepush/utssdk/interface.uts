@@ -1,0 +1,113 @@
+/**
+ * interface.uts
+ * uts插件接口定义文件，按规范定义接口文件可以在HBuilderX中更好的做到语法提示
+ */
+
+/**
+ * getDeviceToken 的参数
+ */
+export type GetDeviceTokenOptions = {
+  suggestPushType?: string  // 默认为空字符串
+  config?: Record<string, string>  // 默认为空对象
+}
+
+/**
+ * getDeviceToken 的回调函数类型
+ */
+export type GetDeviceTokenCallback = (token: string) => void  // 无法获取令牌时返回空字符串
+
+/* 函数定义 */
+export type GetDeviceToken = (options: GetDeviceTokenOptions, callback: GetDeviceTokenCallback) => void
+
+/**
+ * 通知点击打开应用时回调给业务的参数
+ */
+export type OpenNotificationResult = Record<string, any>
+
+/**
+ * 通知点击打开应用的回调函数类型
+ */
+export type OpenNotificationCallback = (result: OpenNotificationResult) => void
+
+/* 函数定义 */
+export type AddOpenNotificationListener = (callback: OpenNotificationCallback) => void
+export type RemoveOpenNotificationListener = (callback: OpenNotificationCallback) => void
+
+/**
+ * NIMNativePush 接口定义
+ */
+export interface INIMNativePush {
+  /**
+   * 获取设备推送令牌
+   * 
+   * @param options 配置选项
+   * @param callback 回调函数，返回token或空字符串
+   */
+  getDeviceToken(options: GetDeviceTokenOptions, callback: GetDeviceTokenCallback): void;
+
+  /**
+   * 监听用户点击通知打开应用事件
+   *
+   * @param callback 回调函数，返回推送点击携带的参数
+   */
+  addOpenNotificationListener(callback: OpenNotificationCallback): void;
+
+  /**
+   * 移除通知点击打开应用事件监听
+   *
+   * @param callback 已注册的回调函数
+   */
+  removeOpenNotificationListener(callback: OpenNotificationCallback): void;
+}
+
+interface Uni {
+  /**
+   * 获取设备推送令牌
+   *
+   * @example
+   * ```typescript
+   * uni.NIMNativePush.getDeviceToken({
+   *    suggestPushType: "",  // 可选，默认为空字符串
+   *    config: {}  // 可选，默认为空对象
+   * }, (token) => {
+   *    if (token) {
+   *      console.log('获取到的推送令牌:', token);
+   *    } else {
+   *      console.log('无法获取推送令牌');
+   *    }
+   * });
+   * ```
+   * @remark
+   * - 该接口会通过回调函数返回推送令牌，如果无法获取令牌，将返回空字符串
+   * @uniPlatform {
+   *    "app": {
+   *        "android": {
+   *            "osVer": "4.4.4",
+   *            "uniVer": "3.6.11",
+   *            "unixVer": "3.9.0"
+   *        },
+   *        "ios": {
+   *            "osVer": "12.0",
+   *            "uniVer": "3.6.11",
+   *            "unixVer": "4.11"
+   *        },
+     *    "harmony": {
+     *      "osVer": "3.0",
+     *      "uniVer": "4.23",
+     *      "unixVer": "x"
+     *    }
+   *    },
+   *    "web": {
+   *      "uniVer": "3.6.11",
+   *      "unixVer": "4.0"
+   *    }
+   * }
+   * @uniVueVersion 2,3  //支持的vue版本
+   *
+   */
+  NIMNativePush: {
+    getDeviceToken(options: GetDeviceTokenOptions, callback: GetDeviceTokenCallback): void
+    addOpenNotificationListener(callback: OpenNotificationCallback): void
+    removeOpenNotificationListener(callback: OpenNotificationCallback): void
+  }
+}
