@@ -1,0 +1,401 @@
+/**
+ * 引用 iOS 系统库
+ */
+import { UIDevice } from 'UIKit';
+import { UIApplication, UNUserNotificationCenter, UNAuthorizationOptions } from 'UIKit';
+import { NSUserDefaults } from 'Foundation';
+import { NSError, NSData } from 'Foundation';
+import { NSNotificationCenter, NSNotification, NSString } from 'Foundation';
+import { NSNotificationName } from 'Foundation';
+import { NSURL, NSBundle } from 'Foundation';
+import { NSLog, NSProcessInfo } from 'Foundation';
+import { UTSiOS } from 'uni.UTS.iOS';
+
+/* 引入 interface.uts 文件中定义的变量 */
+import { GetDeviceTokenOptions, GetDeviceTokenCallback, GetDeviceToken, OpenNotificationCallback, AddOpenNotificationListener, RemoveOpenNotificationListener } from '../interface.uts';
+
+/* 引入 unierror.uts 文件中定义的变量 */
+import { UniErrorSubject } from '../unierror';
+
+// 通知名称常量
+const NOTIFICATION_APNS_TOKEN_RECEIVED = "NIMNativePushAPNsTokenReceived";
+const NOTIFICATION_APNS_TOKEN_FAILED = "NIMNativePushAPNsTokenFailed";
+
+// 推送类型常量
+const PUSH_TYPE = {
+  APNS: '0',              // Apple Push Notification Service（生产环境）
+  APNS_SANDBOX: '1',      // APNs 沙箱环境（开发环境）
+  XIAOMI: '5',            // 小米推送（Android）
+  HMS: '6',               // 华为推送（Android）
+  MEIZU: '7',             // 魅族推送（Android）
+  FCM: '8',               // Firebase Cloud Messaging（Android）
+  VIVO: '9',              // vivo推送（Android）
+  OPPO: '10',             // OPPO推送（Android）
+  HONOR: '11'             // 荣耀推送（Android）
+};
+
+// Token 缓存key
+const TOKEN_CACHE_KEY = "nim_push_token";
+const TOKEN_TYPE_CACHE_KEY = "nim_push_type";
+const TOKEN_TIME_CACHE_KEY = "nim_push_time";
+
+// Token 缓存有效期（24小时，单位毫秒）
+const TOKEN_CACHE_VALIDITY = 24 * 60 * 60 * 1000;
+
+/**
+ * 获取设备推送令牌的实现
+ */
+const getDeviceTokenImpl: GetDeviceToken = function(options: GetDeviceTokenOptions, callback: GetDeviceTokenCallback) {
+  // 使用默认值处理入参
+  const suggestPushType = options.suggestPushType || '';
+  const config = options.config || {};
+  
+  // 检查缓存的Token是否有效
+  const cachedToken = checkCachedToken();
+  if (cachedToken) {
+    console.log('Using cached APNs token');
+    callback(cachedToken);
+    return;
+  }
+
+  // 确定使用的推送类型（生产环境或沙箱环境）
+  const pushType = suggestPushType || (isProdEnvironment(config) ? PUSH_TYPE.APNS : PUSH_TYPE.APNS_SANDBOX);
+  console.log(`Using push type: ${pushType}`);
+  
+  // 请求推送权限并获取Token
+  requestNotificationPermission((granted) => {
+    if (!granted) {
+      console.error('Push notification permission denied by user');
+      callback('');
+      return;
+    }
+    
+    // 注册远程通知
+    registerForRemoteNotifications((token) => {
+      if (token && token.length > 0) {
+        console.log('APNs token retrieved successfully');
+        // 保存Token到缓存
+        saveTokenToCache(token, pushType);
+        callback(token);
+      } else {
+        console.error('Failed to get APNs token');
+        callback('');
+      }
+    });
+  });
+};
+
+const addOpenNotificationListenerImpl: AddOpenNotificationListener = function(callback: OpenNotificationCallback) {
+  NSLog("addOpenNotificationListener is handled by NIMUniPlugin native plugin on iOS");
+};
+
+const removeOpenNotificationListenerImpl: RemoveOpenNotificationListener = function(callback: OpenNotificationCallback) {
+  NSLog("removeOpenNotificationListener is handled by NIMUniPlugin native plugin on iOS");
+};
+
+/**
+ * 判断是否为生产环境
+ */
+function isProdEnvironment(config: Record<string, string>): boolean {
+  // 如果配置中明确指定了环境，则使用配置中的环境
+  if (config['environment'] === 'production') {
+    return true;
+  } else if (config['environment'] === 'sandbox') {
+    return false;
+  }
+  
+  // 根据NSProcessInfo的环境变量判断当前是否为生产环境
+  // Xcode在Debug配置下会设置DEBUG=1，在Release配置下不会设置
+  // 如果能够获取到DEBUG环境变量，则认为是开发环境
+  try {
+    const processInfo = NSProcessInfo.processInfo();
+    const environment = processInfo.environment;
+    const debugValue = environment.objectForKey("DEBUG") as NSString;
+    
+    // 如果DEBUG环境变量存在并且值为1，则是开发环境
+    if (debugValue && debugValue.isEqualToString("1")) {
+      NSLog("Running in DEBUG mode, using sandbox APNs environment");
+      return false;
+    }
+    
+    // 检查应用是否是TestFlight版本
+    const receiptURL = NSBundle.mainBundle().appStoreReceiptURL;
+    if (receiptURL) {
+      const isTestFlight = receiptURL.absoluteString.includes("sandboxReceipt");
+      if (isTestFlight) {
+        NSLog("Running in TestFlight, using production APNs environment");
+        return true;
+      }
+    }
+    
+    // 默认使用生产环境
+    NSLog("Using production APNs environment");
+    return true;
+  } catch (err) {
+    NSLog("Error determining environment: %@", err);
+    // 如果无法确定，默认使用开发环境更安全
+    return false;
+  }
+}
+
+/**
+ * 请求推送通知权限
+ */
+function requestNotificationPermission(callback: (granted: boolean) => void): void {
+  try {
+    // 获取UNUserNotificationCenter实例
+    const center = UNUserNotificationCenter.currentNotificationCenter();
+    
+    // 请求权限
+    center.requestAuthorizationWithOptionsCompletionHandler(
+      UNAuthorizationOptions.Badge | UNAuthorizationOptions.Sound | UNAuthorizationOptions.Alert, 
+      (granted, error) => {
+        if (error) {
+          console.error(`Error requesting notification permission: ${error}`);
+          callback(false);
+          return;
+        }
+        
+        callback(granted);
+      }
+    );
+  } catch (err) {
+    console.error(`Error requesting notification permission: ${err}`);
+    callback(false);
+  }
+}
+
+/**
+ * 注册远程通知并获取设备Token
+ */
+function registerForRemoteNotifications(callback: (token: string) => void): void {
+  try {
+    // 设置通知观察者，用于接收APNs token
+    NSNotificationCenter.defaultCenter().addObserverForNameObjectQueue(
+      NSNotificationName(NOTIFICATION_APNS_TOKEN_RECEIVED),
+      null,
+      null,
+      (notification: NSNotification) => {
+        const tokenString = notification.userInfo?.objectForKey("token") as string || '';
+        if (tokenString && tokenString.length > 0) {
+          NSLog("APNs token received from notification: %@", tokenString);
+          callback(tokenString);
+        } else {
+          NSLog("Empty APNs token received from notification");
+          callback('');
+        }
+        
+        // 移除观察者
+        NSNotificationCenter.defaultCenter().removeObserverNameObject(null, NSNotificationName(NOTIFICATION_APNS_TOKEN_RECEIVED), null);
+        NSNotificationCenter.defaultCenter().removeObserverNameObject(null, NSNotificationName(NOTIFICATION_APNS_TOKEN_FAILED), null);
+      }
+    );
+    
+    // 设置失败通知观察者
+    NSNotificationCenter.defaultCenter().addObserverForNameObjectQueue(
+      NSNotificationName(NOTIFICATION_APNS_TOKEN_FAILED),
+      null,
+      null,
+      (notification: NSNotification) => {
+        const error = notification.userInfo?.objectForKey("error") as NSError;
+        NSLog("Failed to register for remote notifications: %@", error);
+        callback('');
+        
+        // 移除观察者
+        NSNotificationCenter.defaultCenter().removeObserverNameObject(null, NSNotificationName(NOTIFICATION_APNS_TOKEN_RECEIVED), null);
+        NSNotificationCenter.defaultCenter().removeObserverNameObject(null, NSNotificationName(NOTIFICATION_APNS_TOKEN_FAILED), null);
+      }
+    );
+    
+    // 在主线程上注册远程通知
+    UTSiOS.dispatch_async_main(() => {
+      NSLog("Registering for remote notifications...");
+      UIApplication.sharedApplication().registerForRemoteNotifications();
+    });
+    
+    // 设置超时处理
+    setTimeout(() => {
+      // 检查是否已经收到了token
+      const defaults = NSUserDefaults.standardUserDefaults();
+      const cachedToken = defaults.stringForKey(TOKEN_CACHE_KEY);
+      
+      if (!cachedToken) {
+        NSLog("Timeout waiting for APNs token");
+        
+        // 移除观察者
+        NSNotificationCenter.defaultCenter().removeObserverNameObject(null, NSNotificationName(NOTIFICATION_APNS_TOKEN_RECEIVED), null);
+        NSNotificationCenter.defaultCenter().removeObserverNameObject(null, NSNotificationName(NOTIFICATION_APNS_TOKEN_FAILED), null);
+        
+        callback('');
+      }
+    }, 10000); // 10秒超时
+    
+  } catch (err) {
+    NSLog("Error registering for remote notifications: %@", err);
+    callback('');
+  }
+}
+
+/**
+ * 将NSData转换为十六进制字符串
+ */
+export function convertDeviceTokenToString(deviceToken: NSData): string {
+  try {
+    if (!deviceToken) {
+      return '';
+    }
+    
+    const tokenBytes = deviceToken.bytes;
+    const length = deviceToken.length;
+    let tokenString = '';
+    
+    for (let i = 0; i < length; i++) {
+      // 将每个字节转换为十六进制
+      tokenString += ('0' + (tokenBytes[i] & 0xFF).toString(16)).slice(-2);
+    }
+    
+    return tokenString;
+  } catch (err) {
+    NSLog("Error converting device token to string: %@", err);
+    return '';
+  }
+}
+
+/**
+ * 处理远程通知注册成功 - 应在AppDelegate中调用
+ * 
+ * 在AppDelegate.m中添加:
+ * 
+ * ```
+ * // 引入UTS模块头文件
+ * #import "UNI_APPFRAMEWORK_UTS_EXPORT.h"
+ * 
+ * // 在AppDelegate.m中实现以下方法
+ * - (void)application:(UIApplication *)application didRegisterForRemoteNotificationsWithDeviceToken:(NSData *)deviceToken {
+ *     // 调用UTS模块中的函数处理token
+ *     [NimNativePushAppIOS handleRemoteNotificationsRegistrationSuccessWithDeviceToken:deviceToken];
+ * }
+ * 
+ * - (void)application:(UIApplication *)application didFailToRegisterForRemoteNotificationsWithError:(NSError *)error {
+ *     // 调用UTS模块中的函数处理错误
+ *     [NimNativePushAppIOS handleRemoteNotificationsRegistrationFailWithError:error];
+ * }
+ * ```
+ */
+export function handleRemoteNotificationsRegistrationSuccessWithDeviceToken(deviceToken: NSData): void {
+  try {
+    if (!deviceToken) {
+      NSLog("Empty device token received");
+      return;
+    }
+    
+    // 将设备token转换为字符串
+    const tokenString = convertDeviceTokenToString(deviceToken);
+    
+    if (tokenString && tokenString.length > 0) {
+      NSLog("APNs token successfully obtained: %@", tokenString);
+      
+      // 通过通知中心发送token
+      const userInfo = {};
+      userInfo["token"] = tokenString;
+      NSNotificationCenter.defaultCenter().postNotificationNameObjectUserInfo(
+        NSNotificationName(NOTIFICATION_APNS_TOKEN_RECEIVED),
+        null,
+        userInfo
+      );
+    } else {
+      NSLog("Failed to convert device token to string");
+    }
+  } catch (err) {
+    NSLog("Error handling remote notifications registration success: %@", err);
+  }
+}
+
+/**
+ * 处理远程通知注册失败 - 应在AppDelegate中调用
+ */
+export function handleRemoteNotificationsRegistrationFailWithError(error: NSError): void {
+  try {
+    NSLog("Failed to register for remote notifications: %@", error);
+    
+    // 通过通知中心发送错误
+    const userInfo = {};
+    userInfo["error"] = error;
+    NSNotificationCenter.defaultCenter().postNotificationNameObjectUserInfo(
+      NSNotificationName(NOTIFICATION_APNS_TOKEN_FAILED),
+      null,
+      userInfo
+    );
+  } catch (err) {
+    NSLog("Error handling remote notifications registration failure: %@", err);
+  }
+}
+
+/**
+ * 检查缓存的Token是否有效
+ * 如果有有效的缓存Token，则返回缓存的Token，否则返回空字符串
+ */
+function checkCachedToken(): string {
+  try {
+    const defaults = NSUserDefaults.standardUserDefaults();
+    
+    const cachedToken = defaults.stringForKey(TOKEN_CACHE_KEY) || '';
+    const cachedType = defaults.stringForKey(TOKEN_TYPE_CACHE_KEY) || '';
+    const cachedTime = defaults.doubleForKey(TOKEN_TIME_CACHE_KEY);
+    
+    const now = Date.now();
+    
+    // 如果缓存的Token存在且未过期，则返回缓存的Token
+    if (cachedToken && cachedToken.length > 0 && 
+        cachedType && cachedType.length > 0 && 
+        cachedTime > 0 && 
+        (now - cachedTime) < TOKEN_CACHE_VALIDITY) {
+      return cachedToken;
+    }
+  } catch (err) {
+    console.error(`Error checking cached token: ${err}`);
+  }
+  
+  return '';
+}
+
+/**
+ * 保存Token到缓存
+ */
+function saveTokenToCache(token: string, pushType: string): void {
+  if (!token || token.length === 0 || !pushType || pushType.length === 0) {
+    return;
+  }
+  
+  try {
+    const defaults = NSUserDefaults.standardUserDefaults();
+    
+    defaults.setObjectForKey(token, TOKEN_CACHE_KEY);
+    defaults.setObjectForKey(pushType, TOKEN_TYPE_CACHE_KEY);
+    defaults.setDoubleForKey(Date.now(), TOKEN_TIME_CACHE_KEY);
+    
+    defaults.synchronize();
+  } catch (err) {
+    console.error(`Error saving token to cache: ${err}`);
+  }
+}
+
+/**
+ * 导出 getDeviceToken 函数，用于 uni-ext-api 的映射
+ */
+export const getDeviceToken = getDeviceTokenImpl;
+export const addOpenNotificationListener = addOpenNotificationListenerImpl;
+export const removeOpenNotificationListener = removeOpenNotificationListenerImpl;
+
+/**
+ * 导出 NIMNativePush 对象
+ */
+export const NIMNativePush = {
+  getDeviceToken: getDeviceTokenImpl,
+  addOpenNotificationListener: addOpenNotificationListenerImpl,
+  removeOpenNotificationListener: removeOpenNotificationListenerImpl
+};
+
+/**
+ * 更多插件开发的信息详见：https://uniapp.dcloud.net.cn/plugin/uts-plugin.html
+ */

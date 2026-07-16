@@ -1,3 +1,11 @@
+## 启动
+
+安装依赖
+
+```bash
+npm install
+```
+
 UniApp推送Demo
 
 ## 安装依赖
@@ -9,42 +17,46 @@ npm install
 注意去 pages/index/index.vue 修改成自己的登录信息和推送配置
 
 ```
-const YOUR_ACCOUNT = 'cs3'
-const APPKEY = 'fe41664*********1847ad2547'
-const STATIC_TOKEN = 'e10adc394*******e057f20f883e'
+const YOUR_ACCOUNT = '*********'
+const APPKEY = '*********'
+const STATIC_TOKEN = '*********'
 const OFFLINE_PUSH_CONFIG = {
   miPush: {
-    appId: '2882*****40056',
-    appKey: '518*****056',
-    certificateName: '***_MI_PUSH'
+    appId: '*********',
+    appKey: '*********',
+    certificateName: '*********'
   },
   vivoPush: {
-    certificateName: '***_VIVO_PUSH'
+    certificateName: '*********'
   },
   oppoPush: {
-    appId: '34**155',
-    appKey: '6clw0*****488o0os',
-    secret: 'e163705*******C440A94673',
-    certificateName: '****_OPPO_PUSH'
+    appId: '*********',
+    appKey: '*********',
+    secret: '*********',
+    certificateName: '*********'
   },
   hwPush: {
-    appId: '104***65',
-    certificateName: '****_HW_PUSH'
+    appId: '*********',
+    certificateName: '*********'
   },
   fcmPush: {
-    certificateName: '****_FCM_V0'
+    certificateName: '*********'
   },
   mzPush: {
-    appId: '11***10',
-    appKey: '282bd********bbf9d2369',
-    certificateName: '****_MZ_PUSH'
+    appId: '*********',
+    appKey: '*********',
+    certificateName: '*********'
   },
   honorPush: {
-    certificateName: '****_HONOR_PUSH'
+    certificateName: '*********'
   },
   apns: {
-    certificateName: 'NIM****_DEV'
-  }
+    certificateName: '*********'
+  },
+	// 鸿蒙的配置
+	harmonyPush: {
+		certificateName: '*********'
+	}
 }
 ```
 
@@ -63,3 +75,67 @@ const OFFLINE_PUSH_CONFIG = {
 
 4. 华为注册厂商推送服务时，包含 agconnect-services.json 文件。您需要下载该文件，并将其放至您的 uni-app 应用根目录下的 nativeplugins/NIMUniPlugin/android/assets 文件夹下。
 5. 荣耀注册厂商推送服务时，包含 mcs-services.json 文件。您需下载该文件，并将其放至您的 uni-app 应用根目录下的 nativeplugins/NIMUniPlugin/android/assets 文件夹下。
+
+## FCM 推送注意
+
+插件版本 >= 1.1.4 且开发者需要自行得到一份 google-services.json 并放到目录 nativeplugins/android/assets/ 下
+
+
+## 鸿蒙推送配置
+
+[uniapp 编鸿蒙推送说明](https://docs.popo.netease.com/team/pc/MMC/pageDetail/97a23fc297ee4a228c17e6cae161cff1?popo_locale=zh&xyz=1770086600402&appVersion=4.27.0&deviceType=4&popolocale=zh-CN&popo_hidenativebar=1&popo_noindicator=1&disposable_login_token=1&xyz=1779884845373#edit)
+
+
+去 manifest.json 修改, 视图界面里需要选择 certificates 文件夹下的同名的证书.
+
+```
+    "app-harmony" : {
+        "distribute" : {
+            "bundleName" : "*********",
+            "signingConfigs" : {
+                "default" : {
+                    "certpath" : "*********",
+                    "keyAlias" : "*********",
+                    "keyPassword" : "*********",
+                    "profile" : "*********",
+                    "signAlg" : "SHA256withECDSA",
+                    "storeFile" : "*********",
+                    "storePassword" : "*********"
+                }
+            }
+        }
+    }
+```
+
+收不到鸿蒙推送的排查思路, 的确发了消息了, 但是推送没有收到, 还可能是什么原因呢.
+
+1. 确认鸿蒙手机鸿蒙系统
+2. 线上环境 appkey: *********
+3. 明确看到了 token 获取到了, 且发了 `34_1, sendCmd: 34_1,v2SetDeviceToken,ser:6 {"SER":6,"SID":34,"CID":1,"Q":[{"t":"String","v":"*********"},{"t":"String","v":"*********"},{"t":"Int","v":0}]}`
+4. 登录账号为 *********, 这个账号没有其他人登录
+5. 发送消息的账号为 *********, 发的时候的确携带了 pushEnable 和 pushPayload, 发的上行
+
+```js
+const harmonyField = JSON.stringify({
+	payload: {
+		notification: {
+			clickAction: {
+				actionType: 0,
+				data: {
+					sessionId: "*********",
+					sessionType: "0"
+				}
+			}
+		},
+	}
+})
+
+window.nim.V2NIMMessageService.sendMessage(window.message, "YOUR_CONVERSATION_ID", {
+	pushConfig: {
+		pushEnabled: true,
+		pushPayload: JSON.stringify({ harmonyField })
+	}
+})
+```
+
+6. 手机设置-通知和状态栏-该 app 的通知管理确认开启.

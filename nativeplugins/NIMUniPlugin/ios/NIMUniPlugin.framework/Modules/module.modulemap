@@ -1,0 +1,6 @@
+framework module NIMUniPlugin {
+  umbrella header "NIMUniPlugin.h"
+  export *
+
+  module * { export * }
+}

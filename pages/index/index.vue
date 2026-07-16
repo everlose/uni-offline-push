@@ -27,6 +27,7 @@
 				<button size="mini" class="btn connect" type="default" @click="connect">连接</button>		
 				<button size="mini" class="btn destroy" type="default" @click="destroy">销毁</button>
 				<button size="mini" class="btn destroy" type="default" @click="clearLog">清空日志</button>
+				<button size="mini" class="btn destroy" type="default" @click="applyNotificationPermission">IOS申请通知权限</button>
 			</view>
 		</view>
 		
@@ -50,46 +51,60 @@
 <script>
 const { log, debug, info, warn, error } = console
 // const NIMSDK = require('../../static/NIM_UNIAPP_SDK')
-const NIMSDKES6 = require('nim-web-sdk-ng/dist/v2/NIM_UNIAPP_SDK')
-const NIMSDK = NIMSDKES6.default
-const app = getApp()
+import NIMSDK from 'nim-web-sdk-ng/dist/v2/NIM_UNIAPP_SDK'
 
-const YOUR_ACCOUNT = 'ctt4'
-const CONVERSATION_ID = 'ctt4|1|ctt5'
-const APPKEY = 'fe41664*********1847ad2547'
-const STATIC_TOKEN = 'e10adc394*******e057f20f883e'
+function getGlobalData() {
+  const app = getApp()
+  app.globalData = app.globalData || {}
+  return app.globalData
+}
+
+// 以下信息均为敏感信息，请开发者替换为自己的账号、appkey、token 及各厂商推送配置
+const YOUR_ACCOUNT = '*********'
+const CONVERSATION_ID = '*********'
+const APPKEY = '*********'
+const STATIC_TOKEN = '*********'
 const OFFLINE_PUSH_CONFIG = {
   miPush: {
-    appId: '2882*****40056',
-    appKey: '518*****056',
-    certificateName: '***_MI_PUSH'
+    appId: '*********',
+    appKey: '*********',
+    certificateName: '*********'
   },
   vivoPush: {
-    certificateName: '***_VIVO_PUSH'
+    certificateName: '*********'
   },
   oppoPush: {
-    appId: '34**155',
-    appKey: '6clw0*****488o0os',
-    secret: 'e163705*******C440A94673',
-    certificateName: '****_OPPO_PUSH'
+    appId: '*********',
+    appKey: '*********',
+    secret: '*********',
+    certificateName: '*********'
   },
   hwPush: {
-    appId: '104***65',
-    certificateName: '****_HW_PUSH'
+    appId: '*********',
+    certificateName: '*********'
   },
   fcmPush: {
-    certificateName: '****_FCM_V0'
+    certificateName: '*********'
   },
   mzPush: {
-    appId: '11***10',
-    appKey: '282bd********bbf9d2369',
-    certificateName: '****_MZ_PUSH'
+    appId: '*********',
+    appKey: '*********',
+    certificateName: '*********'
   },
   honorPush: {
-    certificateName: '****_HONOR_PUSH'
+    certificateName: '*********'
   },
   apns: {
-    certificateName: 'NIM****_DEV'
+    certificateName: '*********'
+  },
+	// 新加的 ios pushkit 证书传递
+	pushkit: {
+		certificateName: '*********'
+	},
+
+  // 鸿蒙的配置
+  harmonyPush: {
+    certificateName: '*********'
   }
 }
 
@@ -153,24 +168,39 @@ export default {
   },
   methods: {
     async connect () {
-      app.globalData.nim = NIMSDK.getInstance({
+      const globalData = getGlobalData()
+      globalData.nim = NIMSDK.getInstance({
         appkey: this.appkey,
 				apiVersion: 'v2',
         debugLevel: 'debug',
         logger: console
-      });
+      },
+				{
+					// "V2NIMLoginServiceConfig": {
+					// 	"lbsUrls": [
+					// 		"https://imtest-gy.netease.im/lbs/webconf"
+					// 	],
+					// 	"linkUrl": "weblink-dev-gy.netease.im:443"
+					// },
+				},
+			);
   
-      app.globalData.nim.V2NIMLoginService.on('onLoginStatus', function(arg1) {
+      globalData.nim.V2NIMLoginService.on('onLoginStatus', function(arg1) {
         console.log('收到 V2NIMLoginService 模块的 onLoginStatus 事件', arg1)
       })
       
       // #ifdef APP-PLUS
       const nimPushPlugin = uni.requireNativePlugin('NIMUniPlugin-PluginModule')
-      app.globalData.nim.V2NIMSettingService.setOfflinePushConfig(nimPushPlugin, OFFLINE_PUSH_CONFIG)
+      globalData.nim.V2NIMSettingService.setOfflinePushConfig(nimPushPlugin, OFFLINE_PUSH_CONFIG)
       // #endif
+
+      // #ifdef APP-HARMONY
+			const sysInfo = uni.getSystemInfoSync();
+			globalData.nim.V2NIMSettingService.setOfflinePushConfig(uni.NIMNativePush, OFFLINE_PUSH_CONFIG)
+			// #endif
       
       this.connState = 'connecting'
-      await app.globalData.nim.V2NIMLoginService.login(this.account, STATIC_TOKEN, {
+      await globalData.nim.V2NIMLoginService.login(this.account, STATIC_TOKEN, {
         "retryCount": 3,
         "timeout": 60000,
         "forceMode": false,
@@ -180,20 +210,22 @@ export default {
 			uni.setStorageSync('token', STATIC_TOKEN)
     },
     destroy() {
-      if (app.globalData.nim) {
-        app.globalData.nim.destroy()
-        app.globalData.nim = null
+      const globalData = getGlobalData()
+      if (globalData.nim) {
+        globalData.nim.destroy()
+        globalData.nim = null
       }
     },
 		async sendMessage() {
-			if (!app.globalData.nim) {
+      const globalData = getGlobalData()
+			if (!globalData.nim) {
 				console.log('尚未初始化')
 				return
 			}
-			const message = app.globalData.nim.V2NIMMessageCreator.createTextMessage('hello world')
-			const senderId = app.globalData.nim.V2NIMLoginService.getLoginUser() // 发送着, 本账号
-			const receiverId = app.globalData.nim.V2NIMConversationIdUtil.parseConversationTargetId(this.conversationId) // 接收者
-			const conversationType = app.globalData.nim.V2NIMConversationIdUtil.parseConversationType(this.conversationId) // 1: 单聊，2：群聊，3：超级群
+			const message = globalData.nim.V2NIMMessageCreator.createTextMessage('hello world')
+			const senderId = globalData.nim.V2NIMLoginService.getLoginUser() // 发送着, 本账号
+			const receiverId = globalData.nim.V2NIMConversationIdUtil.parseConversationTargetId(this.conversationId) // 接收者
+			const conversationType = globalData.nim.V2NIMConversationIdUtil.parseConversationType(this.conversationId) // 1: 单聊，2：群聊，3：超级群
 			/**  组织推送跳转内容 pushPayload 需要的参数 */
 			// 单聊 p2p 会话, sessionId 要填本账号 id. 群聊要填群 id.
 			const sessionId =
@@ -202,7 +234,7 @@ export default {
 			    : receiverId
 			// 兼容原生 APP 的老版本 IM, 所以映射关系为 老版本的 0: 单聊，1：群聊，5：超级群
 			const sessionType =
-			  conversationType === 1 ? 0 : conversationType === 2 ? 1 : 5
+			  conversationType === '1' ? '0' : conversationType === 2 ? '1' : '5'
 			// 需要换成自己的包名
 			const PACKAGE_NAME = 'com.netease.nim.demo'
 			const pushPayload = JSON.stringify({
@@ -269,6 +301,19 @@ export default {
 			      },
 			    },
 			  },
+				harmonyField: JSON.stringify({
+					payload: {
+						notification: {
+							clickAction: {
+								actionType: 0,
+								data: {
+									sessionId: "ctt5",
+									sessionType: "0"
+								}
+							}
+						},
+					}
+				}),
 			
 			  // 特别声明: 魅族暂不可用, 需要 IM 服务器支持
 			
@@ -276,7 +321,7 @@ export default {
 			  sessionId: sessionId,
 			  sessionType: sessionType,
 			})
-			const res = await app.globalData.nim.V2NIMMessageService.sendMessage(message, `${senderId}|${conversationType}|${receiverId}`, {
+			const res = await globalData.nim.V2NIMMessageService.sendMessage(message, `${senderId}|${conversationType}|${receiverId}`, {
 			  pushConfig: {
 			    pushEnabled: true,
 			    // "pushNickEnabled": true, // 可以选择是否推送昵称
@@ -308,6 +353,10 @@ export default {
     clearLog: function() {
       this.logArr = []
     },
+		applyNotificationPermission: function () {
+			const nimPushPlugin = uni.requireNativePlugin('NIMUniPlugin-PluginModule')
+			nimPushPlugin.requestAPNSPermission()
+		}
 	}
 }
 </script>

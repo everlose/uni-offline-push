@@ -1,0 +1,364 @@
+import pushService from '@hms.core.push.pushService';
+import { Want } from '@kit.AbilityKit';
+
+/* 引入 interface.uts 文件中定义的变量 */
+import {
+  GetDeviceTokenOptions,
+  GetDeviceTokenCallback,
+  GetDeviceToken,
+  OpenNotificationCallback,
+  OpenNotificationResult,
+  AddOpenNotificationListener,
+  RemoveOpenNotificationListener
+} from '../interface.uts';
+
+const OPEN_NOTIFICATION_SOURCE = 'harmony';
+const DEDUPE_WINDOW_MS = 3000;
+const openNotificationListeners: OpenNotificationCallback[] = [];
+let pendingOpenNotification: OpenNotificationResult | null = null;
+let lastOpenNotificationKey = '';
+let lastOpenNotificationTime = 0;
+
+function cloneRecord(source: Record<string, any>): OpenNotificationResult {
+  const result: OpenNotificationResult = {};
+  Object.keys(source).forEach((key: string) => {
+    result[key] = source[key];
+  });
+  return result;
+}
+
+function mergeRecord(target: OpenNotificationResult, source: any | null | undefined): void {
+  if (source == null || typeof source !== 'object' || Array.isArray(source)) {
+    return;
+  }
+
+  const record = source as Record<string, any>;
+  Object.keys(record).forEach((key: string) => {
+    if (target[key] == null) {
+      target[key] = record[key];
+    }
+  });
+}
+
+function tryMergeJsonString(target: OpenNotificationResult, value: any | null | undefined): void {
+  if (typeof value !== 'string' || value.length === 0) {
+    return;
+  }
+
+  const firstChar = value.trim().charAt(0);
+  if (firstChar !== '{' && firstChar !== '[') {
+    return;
+  }
+
+  try {
+    const parsed = JSON.parse(value) as Record<string, any>;
+    mergeRecord(target, parsed);
+  } catch (err) {
+    console.error(`Failed to parse push parameter json: ${err}`);
+  }
+}
+
+function mergePushValue(target: OpenNotificationResult, value: any | null | undefined): void {
+  if (typeof value === 'string') {
+    tryMergeJsonString(target, value);
+    return;
+  }
+
+  mergeRecord(target, value);
+}
+
+function mergePushData(target: OpenNotificationResult, value: any | null | undefined): void {
+  mergePushValue(target, value);
+}
+
+function mergeKnownPushFields(target: OpenNotificationResult, source: any | null | undefined): void {
+  if (source == null || typeof source !== 'object' || Array.isArray(source)) {
+    return;
+  }
+
+  const record = source as Record<string, any>;
+  const keys = [
+    'sessionId',
+    'sessionType',
+    'conversationId',
+    'conversationType',
+    'messageId'
+  ];
+
+  keys.forEach((key: string) => {
+    if (target[key] == null && record[key] != null) {
+      target[key] = record[key];
+    }
+  });
+}
+
+function mergeNestedPushContainer(target: OpenNotificationResult, source: any | null | undefined): void {
+  if (source == null || typeof source !== 'object' || Array.isArray(source)) {
+    return;
+  }
+
+  const record = source as Record<string, any>;
+  mergePushData(target, record['data']);
+  mergePushValue(target, record['payload']);
+  mergePushValue(target, record['extra']);
+  mergePushValue(target, record['action_parameters']);
+}
+
+function mergeHarmonyPushMessage(target: OpenNotificationResult): void {
+  const wantAgentInfo = target['push_wantAgentInfo'] as Record<string, any> | null;
+  const wants = wantAgentInfo == null ? null : wantAgentInfo['wants'] as any[] | null;
+  if (!Array.isArray(wants)) {
+    return;
+  }
+
+  wants.forEach((wantItem: any) => {
+    const wantRecord = wantItem as Record<string, any>;
+    const parameters = wantRecord == null ? null : wantRecord['parameters'] as Record<string, any> | null;
+    const message = parameters == null ? null : parameters['message'] as Record<string, any> | null;
+    const nestedUri = wantRecord == null ? '' : wantRecord['uri'] as string;
+
+    if (nestedUri.length > 0) {
+      mergeUriQuery(target, nestedUri);
+    }
+
+    if (parameters != null) {
+      mergeKnownPushFields(target, parameters);
+      mergePushData(target, parameters['data']);
+      mergePushValue(target, parameters['payload']);
+      mergePushValue(target, parameters['extra']);
+      mergePushValue(target, parameters['action_parameters']);
+    }
+
+    if (message == null) {
+      return;
+    }
+
+    const body = message['body'] as Record<string, any> | null;
+
+    mergeKnownPushFields(target, message);
+
+    mergePushData(target, message['data']);
+    mergePushValue(target, message['payload']);
+    mergePushValue(target, message['extra']);
+    mergeNestedPushContainer(target, message['payload']);
+    mergeNestedPushContainer(target, message['extra']);
+
+    if (body != null) {
+      mergeKnownPushFields(target, body);
+      mergePushData(target, body['data']);
+      mergePushValue(target, body['payload']);
+      mergePushValue(target, body['extra']);
+      mergeNestedPushContainer(target, body['payload']);
+      mergeNestedPushContainer(target, body['extra']);
+
+      const clickAction = body['clickAction'] as Record<string, any> | null;
+      if (clickAction != null) {
+        mergeKnownPushFields(target, clickAction);
+        mergePushData(target, clickAction['data']);
+        mergePushValue(target, clickAction['payload']);
+        mergePushValue(target, clickAction['parameters']);
+        mergeNestedPushContainer(target, clickAction['payload']);
+        mergeNestedPushContainer(target, clickAction['parameters']);
+      }
+    }
+
+    if (typeof target['data'] === 'string') {
+      tryMergeJsonString(target, target['data']);
+    }
+    if (typeof target['payload'] === 'string') {
+      tryMergeJsonString(target, target['payload']);
+    }
+    if (typeof target['extra'] === 'string') {
+      tryMergeJsonString(target, target['extra']);
+    }
+    if (typeof target['action_parameters'] === 'string') {
+      tryMergeJsonString(target, target['action_parameters']);
+    }
+  });
+}
+
+function mergeUriQuery(target: OpenNotificationResult, uri: string): void {
+  if (!uri || uri.length === 0 || uri.indexOf('?') < 0) {
+    return;
+  }
+
+  const query = uri.substring(uri.indexOf('?') + 1);
+  query.split('&').forEach((item: string) => {
+    if (!item || item.length === 0) {
+      return;
+    }
+
+    const separatorIndex = item.indexOf('=');
+    const rawKey = separatorIndex >= 0 ? item.substring(0, separatorIndex) : item;
+    const rawValue = separatorIndex >= 0 ? item.substring(separatorIndex + 1) : '';
+    if (!rawKey || rawKey.length === 0) {
+      return;
+    }
+
+    try {
+      const key = decodeURIComponent(rawKey);
+      const value = decodeURIComponent(rawValue);
+      if (target[key] == null) {
+        target[key] = value;
+      }
+    } catch (err) {
+      console.error(`Failed to decode push uri parameter: ${err}`);
+    }
+  });
+}
+
+function readOpenNotificationKey(result: OpenNotificationResult): string {
+  if (result['_push_notifyid'] != null) {
+    return String(result['_push_notifyid']);
+  }
+
+  const wantAgentInfo = result['push_wantAgentInfo'] as Record<string, any> | null;
+  if (wantAgentInfo != null && wantAgentInfo['requestCode'] != null) {
+    return String(wantAgentInfo['requestCode']);
+  }
+
+  if (result['uri'] != null) {
+    return String(result['uri']);
+  }
+
+  return JSON.stringify(result);
+}
+
+function buildOpenNotificationResult(want: Want): OpenNotificationResult | null {
+  const result: OpenNotificationResult = {};
+  const parameters = want?.parameters as Record<string, any> | null;
+
+  if (parameters != null) {
+    Object.keys(parameters).forEach((key: string) => {
+      result[key] = parameters[key];
+    });
+
+    Object.keys(parameters).forEach((key: string) => {
+      if (key === 'action_parameters' || key === 'pushPayload' || key === 'payload' || key === 'extra') {
+        tryMergeJsonString(result, parameters[key]);
+      }
+    });
+
+    mergeHarmonyPushMessage(result);
+  }
+
+  if (want?.uri != null && want.uri.length > 0) {
+    result['uri'] = want.uri;
+    mergeUriQuery(result, want.uri);
+  }
+
+  if (Object.keys(result).length === 0) {
+    return null;
+  }
+
+  result['source'] = OPEN_NOTIFICATION_SOURCE;
+  return result;
+}
+
+function notifyOpenNotification(result: OpenNotificationResult): void {
+  const now = Date.now();
+  const notificationKey = readOpenNotificationKey(result);
+  if (notificationKey === lastOpenNotificationKey && now - lastOpenNotificationTime < DEDUPE_WINDOW_MS) {
+    return;
+  }
+  lastOpenNotificationKey = notificationKey;
+  lastOpenNotificationTime = now;
+
+  if (openNotificationListeners.length === 0) {
+    pendingOpenNotification = cloneRecord(result);
+    return;
+  }
+
+  openNotificationListeners.forEach((listener: OpenNotificationCallback) => {
+    try {
+      listener(cloneRecord(result));
+    } catch (err) {
+      console.error(`Open notification listener error: ${err}`);
+    }
+  });
+}
+
+function handleOpenNotificationWant(want: Want): void {
+  const result = buildOpenNotificationResult(want);
+  if (result == null) {
+    return;
+  }
+
+  notifyOpenNotification(result);
+}
+
+UTSHarmony.onAppAbilityCreate((want: Want) => {
+  handleOpenNotificationWant(want);
+});
+
+UTSHarmony.onAppAbilityNewWant((want: Want) => {
+  handleOpenNotificationWant(want);
+});
+
+/**
+ * 获取设备推送令牌的实现
+ */
+const getDeviceTokenImpl: GetDeviceToken = function(options: GetDeviceTokenOptions, callback: GetDeviceTokenCallback) {
+  // 使用鸿蒙推送服务获取真实推送令牌
+  pushService.getToken().then((token: string) => {
+    if (token && token.length > 0) {
+      console.log('HMS push token retrieved successfully');
+      callback(token);
+    } else {
+      console.error('Failed to get push token: HMS returned empty token');
+      callback('');
+    }
+  }).catch((err: Error) => {
+    console.error(`Failed to get push token: HMS error - ${err && err.message || 'Unknown error'}`);
+    callback('');
+  });
+}
+
+/**
+ * 监听用户点击通知打开应用事件
+ */
+const addOpenNotificationListenerImpl: AddOpenNotificationListener = function(callback: OpenNotificationCallback) {
+  if (typeof callback !== 'function') {
+    return;
+  }
+
+  if (openNotificationListeners.indexOf(callback) < 0) {
+    openNotificationListeners.push(callback);
+  }
+
+  if (pendingOpenNotification != null) {
+    const result = cloneRecord(pendingOpenNotification);
+    pendingOpenNotification = null;
+    callback(result);
+  }
+}
+
+/**
+ * 移除用户点击通知打开应用事件监听
+ */
+const removeOpenNotificationListenerImpl: RemoveOpenNotificationListener = function(callback: OpenNotificationCallback) {
+  const index = openNotificationListeners.indexOf(callback);
+  if (index >= 0) {
+    openNotificationListeners.splice(index, 1);
+  }
+}
+
+/**
+ * 导出 getDeviceToken 函数，用于 uni-ext-api 的映射
+ */
+export const getDeviceToken = getDeviceTokenImpl;
+export const addOpenNotificationListener = addOpenNotificationListenerImpl;
+export const removeOpenNotificationListener = removeOpenNotificationListenerImpl;
+
+/**
+ * 导出 NIMNativePush 对象
+ */
+export const NIMNativePush = {
+  getDeviceToken: getDeviceTokenImpl,
+  addOpenNotificationListener: addOpenNotificationListenerImpl,
+  removeOpenNotificationListener: removeOpenNotificationListenerImpl
+};
+
+/**
+ * 更多插件开发的信息详见：https://doc.dcloud.net.cn/uni-app-x/plugin/uts-for-harmony.html
+ */
